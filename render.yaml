@@ -1,0 +1,34 @@
+# render.yaml
+services:
+  - type: web
+    name: chatgpt-on-wechat  # 你的服务名称，可以自定义
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: OPEN_AI_API_KEY
+        sync: false  # 稍后在Render后台手动设置，确保安全
+      - key: OPEN_AI_API_BASE
+        value: https://api.deepseek.com/v1  # DeepSeek 的 API 地址
+      - key: MODEL
+        value: deepseek-chat  # 指定使用 DeepSeek 模型
+      - key: CHANNEL_TYPE
+        value: wechatcom_app  # 指定通道为企业微信应用
+      - key: WECHATCOM_CORP_ID
+        sync: false
+      - key: WECHATCOMAPP_AGENT_ID
+        sync: false
+      - key: WECHATCOMAPP_SECRET
+        sync: false
+      - key: WECHATCOMAPP_TOKEN
+        sync: false
+      - key: WECHATCOMAPP_AES_KEY
+        sync: false
+      - key: WECHATCOMAPP_PORT
+        value: 8080  # 服务运行的端口
+      - key: SINGLE_CHAT_PREFIX
+        value: '[""]'  # 私聊时无需前缀，直接触发
+      - key: SINGLE_CHAT_REPLY_PREFIX
+        value: '"[AI] "'  # 回复内容前加 [AI] 前缀
+      - key: CHARACTER_DESC
+        value: 你是基于DeepSeek的AI智能助手，请友好、准确地回答问题。  # 机器人人格设定
