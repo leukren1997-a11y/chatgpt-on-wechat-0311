@@ -1,0 +1,15 @@
+{
+  "channel_type": "wechatcom_app",
+  "model": "deepseek-chat",
+  "open_ai_api_key": "YOUR_DEEPSEEK_API_KEY",
+  "open_ai_api_base": "https://api.deepseek.com/v1",
+  "single_chat_prefix": [""],
+  "single_chat_reply_prefix": "[AI] ",
+  "wechatcom_corp_id": "YOUR_CORP_ID",
+  "wechatcomapp_secret": "YOUR_SECRET",
+  "wechatcomapp_token": "YOUR_TOKEN",
+  "wechatcomapp_aes_key": "YOUR_AES_KEY",
+  "wechatcomapp_agent_id": "YOUR_AGENT_ID",
+  "wechatcomapp_port": 8080,
+  "character_desc": "你是基于DeepSeek的AI助手，请友好回答问题。"
+}
