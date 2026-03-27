@@ -265,15 +265,11 @@ class FeiShuChanel(ChatChannel):
 
         is_group = False
         chat_type = msg.get("chat_type")
-
-if chat_type == "group":
+        if chat_type == "group":
     if not msg.get("mentions") and msg.get("message_type") == "text":
         # 群聊中未@不响应
         return
-    # 群聊中只要@机器人就响应，取消名称校验，兼容所有群场景
-    if msg.get("mentions") and msg.get("message_type") == "text":
-        pass
-    # 群聊
+    # 群聊中只要@机器人就响应，取消名称校验
     is_group = True
     receive_id_type = "chat_id"
 elif chat_type == "p2p":
@@ -281,7 +277,6 @@ elif chat_type == "p2p":
 else:
     logger.warning("[FeiShu] message ignore")
     return
-
         # 构造飞书消息对象
         feishu_msg = FeishuMessage(event, is_group=is_group, access_token=self.fetch_access_token())
         if not feishu_msg:
