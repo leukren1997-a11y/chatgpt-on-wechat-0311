@@ -69,6 +69,7 @@ class FeiShuChanel(ChatChannel):
         self._http_server = None
         self._ws_client = None
         self._ws_thread = None
+        self._bot_open_id = None  # cached bot open_id for @-mention matching
         logger.debug("[FeiShu] app_id={}, app_secret={}, verification_token={}, event_mode={}".format(
             self.feishu_app_id, self.feishu_app_secret, self.feishu_token, self.feishu_event_mode))
         # 无需群校验和前缀
@@ -85,10 +86,30 @@ class FeiShuChanel(ChatChannel):
         self.feishu_app_secret = conf().get('feishu_app_secret')
         self.feishu_token = conf().get('feishu_token')
         self.feishu_event_mode = conf().get('feishu_event_mode', 'websocket')
+        self._fetch_bot_open_id()
         if self.feishu_event_mode == 'websocket':
             self._startup_websocket()
         else:
             self._startup_webhook()
+
+    def _fetch_bot_open_id(self):
+        """Fetch the bot's own open_id via API so we can match @-mentions without feishu_bot_name."""
+        try:
+            access_token = self.fetch_access_token()
+            if not access_token:
+                logger.warning("[FeiShu] Cannot fetch bot info: no access_token")
+                return
+            headers = {"Authorization": "Bearer " + access_token}
+            resp = requests.get("https://open.feishu.cn/open-apis/bot/v3/info/", headers=headers, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("code") == 0:
+                    self._bot_open_id = data.get("bot", {}).get("open_id")
+                    logger.info(f"[FeiShu] Bot open_id fetched: {self._bot_open_id}")
+                else:
+                    logger.warning(f"[FeiShu] Fetch bot info failed: code={data.get('code')}, msg={data.get('msg')}")
+        except Exception as e:
+            logger.warning(f"[FeiShu] Fetch bot open_id error: {e}")
 
     def stop(self):
         import ctypes
@@ -147,11 +168,15 @@ class FeiShuChanel(ChatChannel):
         def handle_message_event(data: lark.im.v1.P2ImMessageReceiveV1) -> None:
             """处理接收消息事件 v2.0"""
             try:
-                logger.debug(f"[FeiShu] websocket receive event: {lark.JSON.marshal(data, indent=2)}")
-
-                # 转换为标准的event格式
                 event_dict = json.loads(lark.JSON.marshal(data))
                 event = event_dict.get("event", {})
+                msg = event.get("message", {})
+
+                # Skip group messages that don't @-mention the bot (reduce log noise)
+                if msg.get("chat_type") == "group" and not msg.get("mentions") and msg.get("message_type") == "text":
+                    return
+
+                logger.debug(f"[FeiShu] websocket receive event: {lark.JSON.marshal(data, indent=2)}")
 
                 # 处理消息
                 self._handle_message_event(event)
@@ -236,6 +261,27 @@ class FeiShuChanel(ChatChannel):
         logger.info("[FeiShu] ✅ Websocket thread started, ready to receive messages")
         ws_thread.join()
 
+    def _is_mention_bot(self, mentions: list) -> bool:
+        """Check whether any mention in the list refers to this bot.
+
+        Priority:
+        1. Match by open_id (obtained from /bot/v3/info at startup, no config needed)
+        2. Fallback to feishu_bot_name config for backward compatibility
+        3. If neither is available, assume the first mention is the bot (Feishu only
+           delivers group messages that @-mention the bot, so this is usually correct)
+        """
+        if self._bot_open_id:
+            return any(
+                m.get("id", {}).get("open_id") == self._bot_open_id
+                for m in mentions
+            )
+        bot_name = conf().get("feishu_bot_name")
+        if bot_name:
+            return any(m.get("name") == bot_name for m in mentions)
+        # Feishu event subscription only delivers messages that @-mention the bot,
+        # so reaching here means the bot was indeed mentioned.
+        return True
+
     def _handle_message_event(self, event: dict):
         """
         处理消息事件的核心逻辑
@@ -283,21 +329,19 @@ class FeiShuChanel(ChatChannel):
         feishu_msg = FeishuMessage(event, is_group=is_group, access_token=self.fetch_access_token())
         if not feishu_msg:
             return
-
         # ====================== 【自定义固定回复：开始】 ======================
         # 拦截“你是谁”直接回复，不走AI
         try:
             user_text = feishu_msg.content.strip()
             if user_text in ["你是谁", "你是谁？", "你叫什么名字", "你叫什么名字？"]:
                 from bridge.reply import Reply, ReplyType
-                reply = Reply(ReplyType.TEXT, "我是机器人刘干呀")
+                reply = Reply(ReplyType.TEXT, "我是机器人刘干")
                 context = self._compose_context(ContextType.TEXT, user_text, isgroup=is_group, msg=feishu_msg, receive_id_type=receive_id_type)
                 self.send(reply, context)
                 return
         except Exception as e:
             logger.error(f"[FeiShu] custom reply error: {e}")
         # ====================== 【自定义固定回复：结束】 ======================
-
         # 处理文件缓存逻辑
         from channel.file_cache import get_file_cache
         file_cache = get_file_cache()
@@ -419,7 +463,7 @@ class FeiShuChanel(ChatChannel):
         can_reply = is_group and msg and hasattr(msg, 'msg_id') and msg.msg_id
 
         # Build content JSON
-        content_json = json.dumps(reply_content) if content_key is None else json.dumps({content_key: reply_content})
+        content_json = json.dumps(reply_content, ensure_ascii=False) if content_key is None else json.dumps({content_key: reply_content}, ensure_ascii=False)
         logger.debug(f"[FeiShu] Sending message: msg_type={msg_type}, content={content_json[:200]}")
 
         if can_reply:
@@ -457,7 +501,7 @@ class FeiShuChanel(ChatChannel):
         }
         data = bytes(json.dumps(req_body), encoding='utf8')
         response = requests.post(url=url, data=data, headers=headers)
-        if response.status == 200:
+        if response.status_code == 200:
             res = response.json()
             if res.get("code") != 0:
                 logger.error(f"[FeiShu] get tenant_access_token error, code={res.get('code')}, msg={res.get('msg')}")
@@ -499,7 +543,7 @@ class FeiShuChanel(ChatChannel):
         response = requests.get(img_url)
         suffix = utils.get_path_suffix(img_url)
         temp_name = str(uuid.uuid4()) + "." + suffix
-        if response.status == 200:
+        if response.status_code == 200:
             # 将图片内容保存为临时文件
             with open(temp_name, "wb") as file:
                 file.write(response.content)
@@ -580,8 +624,8 @@ class FeiShuChanel(ChatChannel):
                 # For HTTP URLs, download first
                 logger.info(f"[FeiShu] Downloading video from URL: {video_url}")
                 response = requests.get(video_url, timeout=(5, 60))
-                if response.status != 200:
-                    logger.error(f"[FeiShu] download video failed, status={response.status}")
+                if response.status_code != 200:
+                    logger.error(f"[FeiShu] download video failed, status={response.status_code}")
                     return None
 
                 # Save to temp file
@@ -626,7 +670,7 @@ class FeiShuChanel(ChatChannel):
                     timeout=(5, 60)
                 )
                 logger.info(
-                    f"[FeiShu] upload video response, status={upload_response.status}, res={upload_response.content}")
+                    f"[FeiShu] upload video response, status={upload_response.status_code}, res={upload_response.content}")
 
                 response_data = upload_response.json()
                 if response_data.get("code") == 0:
@@ -699,7 +743,7 @@ class FeiShuChanel(ChatChannel):
                         timeout=(5, 30)  # 5s connect, 30s read timeout
                     )
                     logger.info(
-                        f"[FeiShu] upload file response, status={upload_response.status}, res={upload_response.content}")
+                        f"[FeiShu] upload file response, status={upload_response.status_code}, res={upload_response.content}")
 
                     response_data = upload_response.json()
                     if response_data.get("code") == 0:
@@ -714,8 +758,8 @@ class FeiShuChanel(ChatChannel):
         # For HTTP URLs, download first then upload
         try:
             response = requests.get(file_url, timeout=(5, 30))
-            if response.status != 200:
-                logger.error(f"[FeiShu] download file failed, status={response.status}")
+            if response.status_code != 200:
+                logger.error(f"[FeiShu] download file failed, status={response.status_code}")
                 return None
 
             # Save to temp file
@@ -768,16 +812,25 @@ class FeiShuChanel(ChatChannel):
 
         # Set session_id based on chat type
         if cmsg.is_group:
+            # Group chat: check if group_shared_session is enabled
             if conf().get("group_shared_session", True):
-                context["session_id"] = cmsg.other_user_id
+                # All users in the group share the same session context
+                context["session_id"] = cmsg.other_user_id  # group_id
             else:
+                # Each user has their own session within the group
+                # This ensures:
+                # - Same user in different groups have separate conversation histories
+                # - Same user in private chat and group chat have separate histories
                 context["session_id"] = f"{cmsg.from_user_id}:{cmsg.other_user_id}"
         else:
+            # Private chat: use user_id only
             context["session_id"] = cmsg.from_user_id
 
         context["receiver"] = cmsg.other_user_id
 
         if ctype == ContextType.TEXT:
+            # 1.文本请求
+            # 图片生成处理
             img_match_prefix = check_prefix(content, conf().get("image_create_prefix"))
             if img_match_prefix:
                 content = content.replace(img_match_prefix, "", 1)
@@ -787,6 +840,7 @@ class FeiShuChanel(ChatChannel):
             context.content = content.strip()
 
         elif context.type == ContextType.VOICE:
+            # 2.语音请求
             if "desire_rtype" not in context and conf().get("voice_reply_voice"):
                 context["desire_rtype"] = ReplyType.VOICE
 
@@ -794,6 +848,10 @@ class FeiShuChanel(ChatChannel):
 
 
 class FeishuController:
+    """
+    HTTP服务器控制器，用于webhook模式
+    """
+    # 类常量
     FAILED_MSG = '{"success": false}'
     SUCCESS_MSG = '{"success": true}'
     MESSAGE_RECEIVE_TYPE = "im.message.receive_v1"
@@ -808,14 +866,18 @@ class FeishuController:
             request = json.loads(web.data().decode("utf-8"))
             logger.debug(f"[FeiShu] receive request: {request}")
 
+            # 1.事件订阅回调验证
             if request.get("type") == URL_VERIFICATION:
                 varify_res = {"challenge": request.get("challenge")}
                 return json.dumps(varify_res)
 
+            # 2.消息接收处理
+            # token 校验
             header = request.get("header")
             if not header or header.get("token") != channel.feishu_token:
                 return self.FAILED_MSG
 
+            # 处理消息事件
             event = request.get("event")
             if header.get("event_type") == self.MESSAGE_RECEIVE_TYPE and event:
                 channel._handle_message_event(event)
