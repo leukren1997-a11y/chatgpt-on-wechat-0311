@@ -288,6 +288,20 @@ class FeiShuChanel(ChatChannel):
         if not feishu_msg:
             return
 
+                # ====================== 【自定义固定回复：开始】 ======================
+        # 拦截“你是谁”直接回复，不走AI
+        try:
+            user_text = feishu_msg.content.strip()
+            if user_text in ["你是谁", "你是谁？", "你叫什么名字", "你叫什么名字？"]:
+                from bridge.reply import Reply, ReplyType
+                reply = Reply(ReplyType.TEXT, "我是机器人刘干呀")
+                context = self._compose_context(ContextType.TEXT, user_text, isgroup=is_group, msg=feishu_msg, receive_id_type=receive_id_type)
+                self.send(reply, context)
+                return
+        except Exception as e:
+            logger.error(f"[FeiShu] custom reply error: {e}")
+        # ====================== 【自定义固定回复：结束】 ======================
+
         # 处理文件缓存逻辑
         from channel.file_cache import get_file_cache
         file_cache = get_file_cache()
