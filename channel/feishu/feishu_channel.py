@@ -267,13 +267,12 @@ class FeiShuChanel(ChatChannel):
         chat_type = msg.get("chat_type")
 
         if chat_type == "group":
-            if not msg.get("mentions") and msg.get("message_type") == "text":
-                # 群聊中未@不响应
-                return
-            if msg.get("mentions") and msg.get("mentions")[0].get("name") != conf().get("feishu_bot_name") and msg.get(
-                    "message_type") == "text":
-                # 不是@机器人，不响应
-                return
+    if not msg.get("mentions") and msg.get("message_type") == "text":
+        # 群聊中未@不响应
+        return
+    # 群聊中只要@机器人就响应，取消名称校验，兼容所有群场景
+    if msg.get("mentions") and msg.get("message_type") == "text":
+        pass
             # 群聊
             is_group = True
             receive_id_type = "chat_id"
